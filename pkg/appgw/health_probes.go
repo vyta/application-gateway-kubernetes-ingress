@@ -84,8 +84,11 @@ func (c *appGwConfigBuilder) generateHealthProbe(backendID backendIdentifier) *n
 	probe := defaultProbe(c.appGwIdentifier, n.HTTP)
 	probe.Name = to.StringPtr(generateProbeName(backendID.Path.Backend.ServiceName, backendID.Path.Backend.ServicePort.String(), backendID.Ingress))
 	probe.ID = to.StringPtr(c.appGwIdentifier.probeID(*probe.Name))
-	if backendID.Rule != nil && len(backendID.Rule.Host) != 0 {
-		probe.Host = to.StringPtr(backendID.Rule.Host)
+
+	listenerID := generateListenerID(backendID.Ingress, backendID.Rule, n.HTTP, nil, false)
+	hostNames := listenerID.getHostNames()
+	if len(hostNames) == 1 && !strings.ContainsAny(hostNames[0], "*?") {
+		probe.Host = to.StringPtr(hostNames[0])
 	}
 
 	pathPrefix, err := annotations.BackendPathPrefix(backendID.Ingress)
