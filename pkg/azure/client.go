@@ -10,11 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
+	"strings"
 
 	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/version"
 	r "github.com/Azure/azure-sdk-for-go/profiles/latest/resources/mgmt/resources"
 	n "github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-09-01/network"
+	a "github.com/Azure/azure-sdk-for-go/services/preview/authorization/mgmt/2018-09-01-preview/authorization"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure/auth"
 	"github.com/golang/glog"
@@ -22,17 +23,14 @@ import (
 	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/utils"
 )
 
-const (
-	retryPause         = 10 * time.Second
-	retryCount         = 3
-	extendedRetryCount = 60
-)
-
 // AzClient is an interface for client to Azure
 type AzClient interface {
 	SetAuthorizer(authorizer autorest.Authorizer)
 
 	ApplyRouteTable(string, string) error
+	CheckAccess(string, RoleDefinition) (bool, error)
+	WaitForAccess(string, RoleDefinition)
+	WaitForGetAccessOnGateway() error
 	GetGateway() (n.ApplicationGateway, error)
 	UpdateGateway(*n.ApplicationGateway) error
 	DeployGatewayWithVnet(ResourceGroup, ResourceName, ResourceName, string) error
@@ -49,6 +47,7 @@ type azClient struct {
 	routeTablesClient     n.RouteTablesClient
 	groupsClient          r.GroupsClient
 	deploymentsClient     r.DeploymentsClient
+	roleAssignmentsClient a.RoleAssignmentsClient
 
 	subscriptionID    SubscriptionID
 	resourceGroupName ResourceGroup
@@ -74,6 +73,7 @@ func NewAzClient(subscriptionID SubscriptionID, resourceGroupName ResourceGroup,
 		routeTablesClient:     n.NewRouteTablesClientWithBaseURI(settings.Environment.ResourceManagerEndpoint, string(subscriptionID)),
 		groupsClient:          r.NewGroupsClientWithBaseURI(settings.Environment.ResourceManagerEndpoint, string(subscriptionID)),
 		deploymentsClient:     r.NewDeploymentsClientWithBaseURI(settings.Environment.ResourceManagerEndpoint, string(subscriptionID)),
+		roleAssignmentsClient: a.NewRoleAssignmentsClientWithBaseURI(settings.Environment.ResourceManagerEndpoint, string(subscriptionID)),
 
 		subscriptionID:    subscriptionID,
 		resourceGroupName: resourceGroupName,
@@ -104,6 +104,9 @@ func NewAzClient(subscriptionID SubscriptionID, resourceGroupName ResourceGroup,
 	if err := az.deploymentsClient.AddToUserAgent(userAgent); err != nil {
 		glog.Error("Error adding User Agent to Deployments client: ", userAgent)
 	}
+	if err := az.roleAssignmentsClient.AddToUserAgent(userAgent); err != nil {
+		glog.Error("Error adding User Agent to Deployments client: ", userAgent)
+	}
 
 	return az
 }
@@ -116,41 +119,86 @@ func (az *azClient) SetAuthorizer(authorizer autorest.Authorizer) {
 	az.routeTablesClient.Authorizer = authorizer
 	az.groupsClient.Authorizer = authorizer
 	az.deploymentsClient.Authorizer = authorizer
+	az.roleAssignmentsClient.Authorizer = authorizer
 }
 
-func (az *azClient) GetGateway() (response n.ApplicationGateway, err error) {
-	err = utils.Retry(retryCount, retryPause,
+func (az *azClient) WaitForAccess(resourceID string, role RoleDefinition) {
+	utils.Retry(-1, retryPause,
 		func() (utils.Retriable, error) {
-			response, err = az.appGatewaysClient.Get(az.ctx, string(az.resourceGroupName), string(az.appGwName))
-			if err == nil {
+			hasAccess, err := az.CheckAccess(resourceID, role)
+			if err != nil {
+				glog.Errorf("Error while checking access to app gateway: %s", err)
+			}
+
+			if hasAccess {
 				return utils.Retriable(false), nil
 			}
 
-			// Reasons for 403 errors
-			if response.Response.Response != nil && response.Response.StatusCode == 403 {
-				glog.Error("Possible reasons:" +
-					" AKS Service Principal requires 'Managed Identity Operator' access on Controller Identity;" +
-					" 'identityResourceID' and/or 'identityClientID' are incorrect in the Helm config;" +
-					" AGIC Identity requires 'Contributor' access on Application Gateway and 'Reader' access on Application Gateway's Resource Group;")
+			glog.Errorf("Missing '%s' access to '%s'.", roleName[role], resourceID)
+			return utils.Retriable(true), errors.New("Retry as required permission is still missing")
+		})
+}
+
+func (az *azClient) CheckAccess(resourceID string, role RoleDefinition) (bool, error) {
+	page, err := az.roleAssignmentsClient.ListForScopeComplete(az.ctx, resourceID, "")
+
+	if err != nil {
+		return false, err
+	}
+
+	hasAccess := false
+	roleAssignmentList := (*page.Response().Value)
+	for _, assignment := range roleAssignmentList {
+		if strings.Contains(*assignment.RoleDefinitionID, string(role)) && strings.EqualFold(*assignment.Scope, resourceID) {
+			hasAccess = true
+		}
+	}
+
+	return hasAccess, nil
+}
+
+func (az *azClient) WaitForGetAccessOnGateway() (err error) {
+	err = utils.Retry(-1, retryPause,
+		func() (utils.Retriable, error) {
+			response, err := az.appGatewaysClient.Get(az.ctx, string(az.resourceGroupName), string(az.appGwName))
+			if err == nil {
+				return utils.Retriable(true), nil
 			}
 
-			if response.Response.Response != nil && response.Response.StatusCode == 404 {
-				glog.Error("Got 404 NOT FOUND status code on getting Application Gateway from ARM.")
-				return utils.Retriable(false), ErrAppGatewayNotFound
+			if response.Response.Response != nil {
+
+				if response.Response.StatusCode == 404 {
+					glog.Errorf("Got status code '%d' while performing a GET on Application Gateway.", response.Response.StatusCode)
+					return utils.Retriable(false), ErrAppGatewayNotFound
+				}
+
+				errorLine := fmt.Sprintf("Unexpected status code '%d' while performing a GET on Application Gateway.", response.Response.StatusCode)
+				if response.Response.StatusCode == 403 {
+					errorLine += fmt.Sprintf(
+						" Please check if AGIC Identity has 'Contributor' access on Application Gateway '%s' and 'Reader' access on Application Gateway's Resource Group '%s'",
+						string(az.appGwName),
+						string(az.resourceGroupName),
+					)
+				}
+
+				glog.Errorf("%s. Err: %s", errorLine, err)
 			}
 
-			if response.Response.Response != nil && response.Response.StatusCode != 200 {
-				// for example, getting 401. This is not expected as we are getting a token before making the call.
-				glog.Error("Unexpected ARM status code on GET existing App Gateway config: ", response.Response.StatusCode)
-			}
-
-			glog.Errorf("Failed fetching config for App Gateway instance. Will retry in %v. Error: %s", retryPause, err)
-			return utils.Retriable(true), ErrGetArmAuth
+			return utils.Retriable(true), err
 		})
 
-	if err != nil && err != ErrAppGatewayNotFound {
-		glog.Errorf("Tried %d times to authenticate with ARM; Error: %s", retryCount, err)
-	}
+	return
+}
+
+func (az *azClient) GetGateway() (gateway n.ApplicationGateway, err error) {
+	err = utils.Retry(retryCount, retryPause,
+		func() (utils.Retriable, error) {
+			gateway, err = az.appGatewaysClient.Get(az.ctx, string(az.resourceGroupName), string(az.appGwName))
+			if err != nil {
+				glog.Errorf("Error while getting application gateway '%s': %s", string(az.appGwName), err)
+			}
+			return utils.Retriable(true), err
+		})
 	return
 }
 
@@ -197,7 +245,7 @@ func (az *azClient) ApplyRouteTable(subnetID string, routeTableID string) error 
 		// no access or no route table
 		return err
 	}
-	
+
 	// Get subnet and check if it is already associated to a route table
 	_, subnetResourceGroup, subnetVnetName, subnetName := ParseSubResourceID(subnetID)
 	subnet, err := az.subnetsClient.Get(az.ctx, string(subnetResourceGroup), string(subnetVnetName), string(subnetName), "")

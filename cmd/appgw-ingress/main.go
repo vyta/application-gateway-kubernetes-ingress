@@ -134,7 +134,9 @@ func main() {
 		azClient.SetAuthorizer(authorizer)
 	}
 
-	if _, err = azClient.GetGateway(); err != nil {
+	// check if application gateway exists/have get access
+	err = azClient.WaitForGetAccessOnGateway()
+	if err != nil {
 		if err == azure.ErrAppGatewayNotFound && env.EnableDeployAppGateway {
 			if env.AppGwSubnetID != "" {
 				err = azClient.DeployGatewayWithSubnet(env.AppGwSubnetID)
@@ -157,6 +159,9 @@ func main() {
 			glog.Fatal(errorLine)
 		}
 	}
+
+	// check write access on application gateway
+	azClient.WaitForAccess(appGwIdentifier.ResourceID(), azure.Contributor)
 
 	// namespace validations
 	if err := validateNamespaces(namespaces, kubeClient); err != nil {
