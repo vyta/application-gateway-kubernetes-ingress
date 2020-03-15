@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	a "github.com/Azure/azure-sdk-for-go/services/preview/authorization/mgmt/2018-09-01-preview/authorization"
+
 	"github.com/golang/glog"
 )
 
@@ -67,4 +69,15 @@ func ConvertToClusterResourceGroup(subscriptionID SubscriptionID, resourceGroup 
 	}
 
 	return fmt.Sprintf("/subscriptions/%s/resourcegroups/%s/providers/Microsoft.ContainerService/managedClusters/%s", subscriptionID, split[1], split[2]), nil
+}
+
+// CheckRoleAssignmentHasOneOfSuperSetRoles checks role assignment to either match the input role definition or any of the super set roles
+func CheckRoleAssignmentHasOneOfSuperSetRoles(existingRoleAssignment a.RoleAssignment, role RoleDefinition) bool {
+	for _, superSetRole := range superSetRoles[role] {
+		if strings.Contains(*existingRoleAssignment.RoleDefinitionID, string(superSetRole)) {
+			return true
+		}
+	}
+
+	return false
 }

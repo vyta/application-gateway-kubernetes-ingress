@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/Azure/application-gateway-kubernetes-ingress/pkg/version"
 	r "github.com/Azure/azure-sdk-for-go/profiles/latest/resources/mgmt/resources"
@@ -134,27 +133,27 @@ func (az *azClient) WaitForAccess(resourceID string, role RoleDefinition) {
 				return utils.Retriable(false), nil
 			}
 
-			glog.Errorf("Missing '%s' access to '%s'.", roleName[role], resourceID)
+			glog.Errorf("AGIC identity doesn't have required minimum role '%s' to '%s'.", roleName[role], resourceID)
 			return utils.Retriable(true), errors.New("Retry as required permission is still missing")
 		})
 }
 
 func (az *azClient) CheckAccess(resourceID string, role RoleDefinition) (bool, error) {
 	page, err := az.roleAssignmentsClient.ListForScopeComplete(az.ctx, resourceID, "")
-
 	if err != nil {
 		return false, err
 	}
 
-	hasAccess := false
-	roleAssignmentList := (*page.Response().Value)
-	for _, assignment := range roleAssignmentList {
-		if strings.Contains(*assignment.RoleDefinitionID, string(role)) && strings.EqualFold(*assignment.Scope, resourceID) {
-			hasAccess = true
+	if page.Response().Value != nil {
+		roleAssignmentList := (*page.Response().Value)
+		for _, assignment := range roleAssignmentList {
+			if CheckRoleAssignmentHasOneOfSuperSetRoles(assignment, role) {
+				return true, nil
+			}
 		}
 	}
 
-	return hasAccess, nil
+	return false, nil
 }
 
 func (az *azClient) WaitForGetAccessOnGateway() (err error) {
