@@ -1,3 +1,6 @@
+FailStatus="fail"
+SuccessStatus="success"
+
 GetIngressIPWithRetry() {
     for ((i=1;i<=100;i++));
     do
@@ -5,14 +8,13 @@ GetIngressIPWithRetry() {
         if [[ $publicIP != "null" && $publicIP != "" ]]
         then
             echo $publicIP
-            exit 0
         fi
         echoerr "Public Ip is null. Will retry again in 1 sec"
         sleep 5
     done
 
     echoerr "Timed out while waiting to get ingress ip."
-    exit -1
+    echo FailStatus
 }
 
 WaitUntil200() {
@@ -21,13 +23,13 @@ WaitUntil200() {
         statusCode=$(curl -sSI $1 -w "%{http_code}" -o /dev/null)
         if [[ $statusCode == 2* ]]
         then
-            exit 0
+            echo SuccessStatus
         fi
         sleep 5
     done
 
     echoerr "Timed out while waiting for 200 OK from the app gateway"
-    exit -1
+    echo FailStatus
 }
 
 DeleteAGICPod() {

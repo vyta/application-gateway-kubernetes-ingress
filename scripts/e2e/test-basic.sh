@@ -1,17 +1,28 @@
 set -x
 source ./utils.sh
 
-# delete app
+echo "Deleting app if it exists"
 kubectl delete -f https://raw.githubusercontent.com/Azure/application-gateway-kubernetes-ingress/master/docs/examples/aspnetapp.yaml
 
-# install app
+echo "Install the app again"
 kubectl apply -f https://raw.githubusercontent.com/Azure/application-gateway-kubernetes-ingress/master/docs/examples/aspnetapp.yaml
 
-# Get ip for the ingress
-ip=$(GetIngressIPWithRetry "ingress/aspnetapp")
+output=$(GetIngressIPWithRetry "ingress/aspnetapp")
+echo "Found ingress Ip: $output"
 
-# wait until we get 200
-WaitUntil200 $ip
+if [[ $output != FailStatus ]]
+then
+    echo "Curling $output and waiting until 200 is returned. If we fail after trying multiple times, then test should fail"
+    output=$(WaitUntil200 $ip)
+fi
 
-# delete app
+echo "Deleting the app"
 kubectl delete -f https://raw.githubusercontent.com/Azure/application-gateway-kubernetes-ingress/master/docs/examples/aspnetapp.yaml
+
+
+echo "Test status: $output"
+if [[ $output == FailStatus ]]
+then
+    exit -1
+fi
+exit 0
