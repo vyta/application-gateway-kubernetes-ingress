@@ -154,7 +154,7 @@ var _ = Describe("Azure", func() {
 				Expect(CheckRoleAssignmentHasOneOfSuperSetRoles(roleAssignment, Contributor)).To(BeFalse())
 			})
 
-			It("should return false when input role defition matches", func() {
+			It("should return true when input role defition matches", func() {
 				roleAssignment := a.RoleAssignment{
 					RoleAssignmentPropertiesWithScope: &a.RoleAssignmentPropertiesWithScope{
 						RoleDefinitionID: to.StringPtr(string(Contributor)),
@@ -163,7 +163,7 @@ var _ = Describe("Azure", func() {
 				Expect(CheckRoleAssignmentHasOneOfSuperSetRoles(roleAssignment, Contributor)).To(BeTrue())
 			})
 
-			It("should return false when input role defition matches", func() {
+			It("should return true when input role defition is super set of the required role", func() {
 				roleAssignment := a.RoleAssignment{
 					RoleAssignmentPropertiesWithScope: &a.RoleAssignmentPropertiesWithScope{
 						RoleDefinitionID: to.StringPtr(string(Owner)),

@@ -135,6 +135,8 @@ func main() {
 	}
 
 	// check if application gateway exists/have get access
+	// When an AAD SP doesn't have access to the app gateway resource group, then AGIC can't read it's role assignments to look for the needed permission.
+	// Instead we perform a simple GET request to check both that the App gateway exists as well as implicitly make sure that AGIC has read access to it.
 	err = azClient.WaitForGetAccessOnGateway()
 	if err != nil {
 		if err == azure.ErrAppGatewayNotFound && env.EnableDeployAppGateway {
@@ -160,7 +162,7 @@ func main() {
 		}
 	}
 
-	// check write access on application gateway
+	// check write access on application gateway (performing a GET doesn't not check for this, so performing an explicit check here)
 	azClient.WaitForAccess(appGwIdentifier.ResourceID(), azure.Contributor)
 
 	// namespace validations
